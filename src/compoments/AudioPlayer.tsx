@@ -2,16 +2,23 @@ import React, { useState, useEffect } from 'react';
 import { View, Button, StyleSheet, Text, Alert } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import { Audio } from 'expo-av';
+import { getContentUriAsync } from 'expo-file-system/legacy'
+import FileSystem from 'expo-file-system';
 
 type PlaybackStatus = 'loading' | 'playing' | 'paused' | 'stopped';
 
-const AudioPlayer: React.FC = () => {
+interface Iprops {
+  fileName: string,
+  filePath: string
+}
+
+const AudioPlayer: React.FC<Iprops> = ({ fileName, filePath }) => {
   const [sound, setSound] = useState<Audio.Sound | null>(null);
   const [status, setStatus] = useState<PlaybackStatus>('stopped');
-  const [fileName, setFileName] = useState<string>('No file selected');
 
   // --- 1. Sound Object Management & Cleanup ---
   useEffect(() => {
+    loadAudio(filePath);
     // Crucial: Cleanup when component unmounts
     return () => {
       if (sound) {
@@ -19,43 +26,16 @@ const AudioPlayer: React.FC = () => {
         sound.unloadAsync();
       }
     };
-  }, [sound]); // Dependency on 'sound' ensures cleanup runs if 'sound' object changes
 
-  // --- 2. File Selection Logic ---
-  const selectFile = async () => {
-    try {
-      // Unload any currently loaded sound before selecting a new one
-      if (sound) {
-        await sound.unloadAsync();
-        setSound(null);
-        setStatus('stopped');
-      }
-
-      const result = await DocumentPicker.getDocumentAsync({
-        type: 'audio/*', // Filter for audio files
-        copyToCacheDirectory: true, // Recommended for playback
-      });
-
-      if (result.canceled === false) {
-        // The URI is the path to the file in Expo's temporary cache
-        const fileUri = result.assets[0].uri;
-        const name = result.assets[0].name;
-
-        setFileName(name);
-        await loadAudio(fileUri);
-
-      } else {
-        // User cancelled the file picker
-        console.log('File selection cancelled.');
-      }
-    } catch (error) {
-      console.error('Error picking document:', error);
-      Alert.alert('Error', 'Failed to open file picker or load audio.');
-    }
-  };
+  }, [filePath]); // Dependency on 'sound' ensures cleanup runs if 'sound' object changes
 
   // --- 3. Audio Loading Logic ---
   const loadAudio = async (uri: string) => {
+    if (sound) {
+      await sound.unloadAsync();
+      setSound(null);
+      setStatus('stopped');
+    }
     try {
       setStatus('loading');
 
@@ -123,10 +103,6 @@ const AudioPlayer: React.FC = () => {
       <Text style={styles.statusText}>Status: {status.toUpperCase()}</Text>
 
       <View style={styles.buttonGroup}>
-        <Button
-          title="Select Audio File 🎵"
-          onPress={selectFile}
-        />
         <Button
           title={buttonTitle}
           onPress={togglePlayback}
