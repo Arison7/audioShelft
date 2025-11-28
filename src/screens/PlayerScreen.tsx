@@ -18,7 +18,7 @@ const PlayerScreen: React.FC<PlayerProps> = ({ route }) => {
       {/* This is where your functional audio player component would go, 
         using the filePath prop for playback.
       */}
-      <AudioPlayer />
+      <AudioPlayer fileName={fileName} filePath={filePath} />
 
     </View>
   );
