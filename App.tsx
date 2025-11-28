@@ -1,14 +1,19 @@
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, Text, View } from 'react-native';
 import AudioPlayer from './src/compoments/AudioPlayer';
+import { createStaticNavigation } from '@react-navigation/native';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import RootStack from './src/navigation/RootStack';
+import { NavigationContainer } from '@react-navigation/native';
+
+
 
 export default function App() {
   return (
-    <View style={styles.container}>
-      <Text>Open up App.tsx to start working on your app!</Text>
-      <StatusBar style="auto" />
-      <AudioPlayer />
-    </View>
+    <NavigationContainer>
+      {/* RootStack contains all your configured screens (Home, Shelf, Player, Profile) */}
+      <RootStack />
+    </NavigationContainer>
   );
 }
 
