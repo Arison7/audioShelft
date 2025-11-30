@@ -1,115 +1,59 @@
-import React, { useState, useEffect } from 'react';
-import { View, Button, StyleSheet, Text, Alert } from 'react-native';
-import * as DocumentPicker from 'expo-document-picker';
-import { Audio } from 'expo-av';
-import { getContentUriAsync } from 'expo-file-system/legacy'
-import FileSystem from 'expo-file-system';
-
-type PlaybackStatus = 'loading' | 'playing' | 'paused' | 'stopped';
+import React, { useEffect, useState } from 'react';
+import { View, Text, Button, StyleSheet } from 'react-native';
+import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 
 interface Iprops {
-  fileName: string,
-  filePath: string
+  fileName: string;
+  filePath: string;
 }
 
 const AudioPlayer: React.FC<Iprops> = ({ fileName, filePath }) => {
-  const [sound, setSound] = useState<Audio.Sound | null>(null);
-  const [status, setStatus] = useState<PlaybackStatus>('stopped');
+  // Create the audio player hook
+  const player = useAudioPlayer(filePath);
 
-  // --- 1. Sound Object Management & Cleanup ---
-  useEffect(() => {
-    loadAudio(filePath);
-    // Crucial: Cleanup when component unmounts
-    return () => {
-      if (sound) {
-        console.log('Unloading Sound');
-        sound.unloadAsync();
-      }
-    };
+  // Get the playback status
+  const status = useAudioPlayerStatus(player);
 
-  }, [filePath]); // Dependency on 'sound' ensures cleanup runs if 'sound' object changes
+  const isLoaded = status?.isLoaded;
+  const isPlaying = status?.playing;
 
-  // --- 3. Audio Loading Logic ---
-  const loadAudio = async (uri: string) => {
-    if (sound) {
-      await sound.unloadAsync();
-      setSound(null);
-      setStatus('stopped');
-    }
-    try {
-      setStatus('loading');
+  // Get currentTime and duration in seconds
+  const currentTime = status?.currentTime ?? 0;
+  const duration = status?.duration ?? 0;
 
-      // Set audio mode for playback compatibility (especially Android background)
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
-        shouldDuckAndroid: true,
-        staysActiveInBackground: true,
-        playThroughEarpieceAndroid: false,
-      });
+  // Format seconds into hh:mm:ss
+  const formatTime = (seconds: number) => {
+    const totalSeconds = Math.floor(seconds);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const secs = totalSeconds % 60;
 
-      // Create a new sound object from the selected URI
-      const { sound: newSound } = await Audio.Sound.createAsync(
-        { uri }, // Use the dynamic URI here
-        { shouldPlay: false }
-      );
+    const hh = hours.toString().padStart(2, '0');
+    const mm = minutes.toString().padStart(2, '0');
+    const ss = secs.toString().padStart(2, '0');
 
-      setSound(newSound);
-      setStatus('paused');
-
-      // Optional: Update status when playback finishes
-      newSound.setOnPlaybackStatusUpdate((playbackStatus) => {
-        if (playbackStatus.isLoaded && playbackStatus.didJustFinish) {
-          setStatus('stopped');
-          newSound.stopAsync();
-        }
-      });
-
-    } catch (error) {
-      console.error('Error creating sound object:', error);
-      setStatus('stopped');
-    }
+    return `${hh}:${mm}:${ss}`;
   };
-
-  // --- 4. Play/Pause Control ---
-  const togglePlayback = async () => {
-    if (!sound) {
-      Alert.alert('No File', 'Please select an audio file first.');
-      return;
-    }
-
-    const playbackStatus = await sound.getStatusAsync();
-
-    if (playbackStatus.isLoaded) {
-      if (playbackStatus.isPlaying) {
-        await sound.pauseAsync();
-        setStatus('paused');
-      } else {
-        await sound.playAsync();
-        setStatus('playing');
-      }
-    }
-  };
-
-  // --- 5. Render UI ---
-  const buttonTitle =
-    status === 'loading' ? 'Loading...' :
-      status === 'playing' ? 'Pause' :
-        'Play';
 
   return (
     <View style={styles.container}>
-      <Text style={styles.fileName}>Selected File: **{fileName}**</Text>
-      <Text style={styles.statusText}>Status: {status.toUpperCase()}</Text>
+      <Text style={styles.fileName}>{fileName}</Text>
+      <Text style={styles.statusText}>
+        {isLoaded ? (isPlaying ? 'Playing' : 'Paused') : 'Loading...'}
+      </Text>
 
-      <View style={styles.buttonGroup}>
-        <Button
-          title={buttonTitle}
-          onPress={togglePlayback}
-          disabled={!sound || status === 'loading'}
-          color={status === 'playing' ? 'red' : 'green'}
-        />
-      </View>
+      <Text style={styles.progress}>
+        {formatTime(currentTime)} / {formatTime(duration)}
+      </Text>
+
+      <Button
+        title={isPlaying ? 'Pause' : 'Play'}
+        onPress={() => {
+          if (isPlaying) player.pause();
+          else player.play();
+        }}
+        disabled={!isLoaded}
+      />
     </View>
   );
 };
@@ -126,14 +70,14 @@ const styles = StyleSheet.create({
   },
   statusText: {
     fontSize: 14,
-    marginBottom: 20,
+    marginBottom: 10,
     color: '#555',
   },
-  buttonGroup: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    width: '90%',
-  }
+  progress: {
+    fontSize: 14,
+    marginBottom: 20,
+    color: '#333',
+  },
 });
 
 export default AudioPlayer;

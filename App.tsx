@@ -1,6 +1,6 @@
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, Text, View } from 'react-native';
-import AudioPlayer from './src/compoments/AudioPlayer';
+import Audio from './src/compoments/AudioPlayer';
 import { createStaticNavigation } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import RootStack from './src/navigation/RootStack';
