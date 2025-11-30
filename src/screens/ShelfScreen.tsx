@@ -20,7 +20,6 @@ const ASYNC_STORAGE_KEY = '@MediaShelf:list';
 export interface MediaItem {
   id: string;
   name: string;
-  // This stores the external URI (now persistently accessible on Android)
   permanentUri: string;
   timestamp: number;
 }
@@ -60,11 +59,9 @@ const ShelfScreen: React.FC<ShelfProps> = ({ navigation }) => {
     loadShelf();
   }, [loadShelf]);
 
-  // --- 3. File Selection and Persistence Logic (SAF Implementation) ---
   const handleAddFile = async () => {
     setIsPicking(true);
     try {
-
       const [result] = await pick({
         mode: 'open',
         type: 'audio/*',
@@ -96,17 +93,11 @@ const ShelfScreen: React.FC<ShelfProps> = ({ navigation }) => {
     }
   };
 
-  // --- 4. Deletion Logic (Only removes the reference) ---
   const handleDeleteItem = async (itemToDelete: MediaItem) => {
-    // 🚨 NOTE: We do not revoke the persistent permission here.
-    // The user must manage the file itself, and the app simply stops tracking it.
-
     // 1. Remove the record from the state and AsyncStorage
     const updatedList = mediaList.filter(item => item.id !== itemToDelete.id);
     setMediaList(updatedList);
     await saveShelf(updatedList);
-
-    Alert.alert("Removed", `Reference to ${itemToDelete.name} has been removed from the shelf.`);
   };
 
   // --- 5. Navigation Logic ---
@@ -129,14 +120,6 @@ const ShelfScreen: React.FC<ShelfProps> = ({ navigation }) => {
   return (
     <View style={styles.container}>
       <Text style={styles.header}>Your Media Shelf (External Files)</Text>
-
-      {/* Warning regarding the non-persistent nature of external URIs */}
-      <View style={styles.warningBox}>
-        <Ionicons name="warning-outline" size={20} color="#e74c3c" />
-        <Text style={styles.warningText}>
-          Files are NOT copied. On Android, persistent read access is requested via OS prompt. If you move the original file, playback will still fail.
-        </Text>
-      </View>
 
       <ScrollView style={styles.listContainer}>
         {mediaList.length === 0 ? (

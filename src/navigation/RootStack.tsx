@@ -1,38 +1,49 @@
 import React from 'react';
-import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { RootStackParamList } from './types';
-
-// Import your screen components
-// Assuming your screens are located in 'src/screens'
 import ShelfScreen from '../screens/ShelfScreen';
-import PlayerScreen from '../screens/PlayerScreen'; // Your new screen
+import PlayerScreen from '../screens/PlayerScreen';
 
-// Initialize the stack navigator with the defined types
-const Stack = createNativeStackNavigator<RootStackParamList>();
+import { Ionicons } from '@expo/vector-icons'; // Using Ionicons for simplicity
+
+const Tab = createBottomTabNavigator<RootStackParamList>();
 
 const RootStack: React.FC = () => {
   return (
-    <Stack.Navigator
+    <Tab.Navigator
       initialRouteName="Shelf"
-      screenOptions={{
-        headerStyle: { backgroundColor: '#3498db' }, // Blue header theme
+      screenOptions={({ route }) => ({
+        headerStyle: { backgroundColor: '#3498db' },
         headerTintColor: '#fff',
         headerTitleStyle: { fontWeight: 'bold' },
-      }}
+        tabBarActiveTintColor: '#3498db',
+        tabBarInactiveTintColor: 'gray',
+        tabBarIcon: ({ color, size }) => {
+          let iconName: keyof typeof Ionicons.glyphMap;
+
+          if (route.name === 'Shelf') {
+            iconName = 'book'; // bookshelf icon
+          } else if (route.name === 'Player') {
+            iconName = 'play-circle'; // player icon
+          } else {
+            iconName = 'alert-circle';
+          }
+
+          return <Ionicons name={iconName} size={size} color={color} />;
+        },
+      })}
     >
-      {/* Your new screens */}
-      <Stack.Screen
+      <Tab.Screen
         name="Shelf"
         component={ShelfScreen}
         options={{ title: 'Media Shelf' }}
       />
-      <Stack.Screen
+      <Tab.Screen
         name="Player"
         component={PlayerScreen}
         options={{ title: 'Media Player' }}
       />
-
-    </Stack.Navigator>
+    </Tab.Navigator>
   );
 };
 

@@ -7,13 +7,20 @@ import AudioPlayer from '../compoments/AudioPlayer'; // Assuming you use the pre
 type PlayerProps = NativeStackScreenProps<RootStackParamList, 'Player'>;
 
 const PlayerScreen: React.FC<PlayerProps> = ({ route }) => {
+  if (!route.params) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+        <Text>No file selected</Text>
+        <Text>Please select a file from the Shelf first</Text>
+      </View>
+    );
+  }
   // Access parameters passed from ShelfScreen
   const { filePath, fileName } = route.params;
 
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Now Playing: {fileName}</Text>
-      <Text style={styles.path}>Path: {filePath}</Text>
 
       {/* This is where your functional audio player component would go, 
         using the filePath prop for playback.
