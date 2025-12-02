@@ -5,9 +5,10 @@ import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 interface Iprops {
   fileName: string;
   filePath: string;
+  onAddNotePress?: (currentTime: number) => void;
 }
 
-const AudioPlayer: React.FC<Iprops> = ({ fileName, filePath }) => {
+const AudioPlayer: React.FC<Iprops> = ({ fileName, filePath, onAddNotePress }) => {
   // Create the audio player hook
   const player = useAudioPlayer(filePath);
 
@@ -54,6 +55,16 @@ const AudioPlayer: React.FC<Iprops> = ({ fileName, filePath }) => {
         }}
         disabled={!isLoaded}
       />
+
+      {onAddNotePress && (
+        <View style={{ marginTop: 10 }}>
+          <Button
+            title="Add note"
+            onPress={() => onAddNotePress(currentTime)}
+            disabled={!isLoaded}
+          />
+        </View>
+      )}
     </View>
   );
 };
