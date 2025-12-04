@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, Button, StyleSheet } from 'react-native';
-import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
+import { useAudioPlayer, useAudioPlayerStatus, setAudioModeAsync } from 'expo-audio';
 
 interface Iprops {
   fileName: string;
@@ -9,6 +9,19 @@ interface Iprops {
 }
 
 const AudioPlayer: React.FC<Iprops> = ({ fileName, filePath, onAddNotePress }) => {
+  useEffect(() => {
+    const configureAudio = async () => {
+      await setAudioModeAsync({
+        playsInSilentMode: true,
+        shouldPlayInBackground: true,
+        interruptionModeAndroid: 'duckOthers',
+        interruptionMode: 'mixWithOthers'
+      });
+    }
+    configureAudio();
+    // Configure audio mode to allow background playback
+  }, []);
+
   // Create the audio player hook
   const player = useAudioPlayer(filePath);
 

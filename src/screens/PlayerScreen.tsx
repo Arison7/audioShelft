@@ -30,6 +30,8 @@ const PlayerScreen: React.FC<PlayerProps> = ({ route }) => {
       </View>
     );
   }
+  
+
   // Access parameters passed from ShelfScreen
   const { filePath, fileName } = route.params;
 
