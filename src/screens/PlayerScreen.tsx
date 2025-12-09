@@ -1,308 +1,441 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, FlatList, TouchableOpacity, Modal, TextInput, Button } from 'react-native';
-import { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { RootStackParamList } from '../navigation/types';
-import AudioPlayer from '../compoments/AudioPlayer'; // Assuming you use the previous MediaPlayer component
-import { getNotesForFile, Note, saveNotesForFile } from '../storage/notesStorage';
-import { Ionicons } from '@expo/vector-icons';
+import React, { useEffect, useState, useRef } from "react";
+import {
+	View,
+	FlatList,
+	TouchableOpacity,
+	Modal,
+	SafeAreaView,
+	StatusBar,
+	Animated,
+	Dimensions,
+	KeyboardAvoidingView,
+	ScrollView,
+	Platform,
+} from "react-native";
+import { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { Ionicons } from "@expo/vector-icons";
+import { RootStackParamList } from "../navigation/types";
+import { getNotesForFile, Note, saveNotesForFile } from "../storage/notesStorage";
+import { usePlayback } from "../context/PlaybackContext";
 
-type PlayerProps = NativeStackScreenProps<RootStackParamList, 'Player'>;
+// Theme & Components
+import { colors, playerScreenStyles } from "../theme";
+import {
+	Typography,
+	Button,
+	IconButton,
+	Input,
+	Card,
+	EmptyState,
+	LoadingScreen,
+} from "../components/ui";
+import AudioPlayer, { AudioPlayerRef } from "../compoments/AudioPlayer";
+
+type PlayerProps = NativeStackScreenProps<RootStackParamList, "Player">;
 
 const formatTime = (seconds: number) => {
-  const totalSeconds = Math.floor(seconds);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const secs = totalSeconds % 60;
+	const totalSeconds = Math.floor(seconds);
+	const hours = Math.floor(totalSeconds / 3600);
+	const minutes = Math.floor((totalSeconds % 3600) / 60);
+	const secs = totalSeconds % 60;
 
-  const hh = hours.toString().padStart(2, '0');
-  const mm = minutes.toString().padStart(2, '0');
-  const ss = secs.toString().padStart(2, '0');
-
-  return `${hh}:${mm}:${ss}`;
+	if (hours > 0) {
+		return `${hours}:${minutes.toString().padStart(2, "0")}:${secs
+			.toString()
+			.padStart(2, "0")}`;
+	}
+	return `${minutes}:${secs.toString().padStart(2, "0")}`;
 };
 
-const PlayerScreen: React.FC<PlayerProps> = ({ route }) => {
-  if (!route.params) {
-    return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-        <Text>No file selected</Text>
-        <Text>Please select a file from the Shelf first</Text>
-      </View>
-    );
-  }
-  
+const PlayerScreen: React.FC<PlayerProps> = ({ route, navigation }) => {
+	if (!route.params) {
+		return (
+			<SafeAreaView style={playerScreenStyles.container}>
+				<EmptyState
+					icon="musical-notes-outline"
+					title="No Track Selected"
+					description="Please select an audiobook from your library"
+					actionLabel="Go to Library"
+					onAction={() => navigation.goBack()}
+				/>
+			</SafeAreaView>
+		);
+	}
 
-  // Access parameters passed from ShelfScreen
-  const { filePath, fileName } = route.params;
+	const { filePath, fileName, coverImageUri, itemId } = route.params;
+	const { setCurrentTrack } = usePlayback();
 
-  const [notes, setNotes] = useState<Note[]>([]);
-  const [notesLoading, setNotesLoading] = useState(true);
+	const [notes, setNotes] = useState<Note[]>([]);
+	const [notesLoading, setNotesLoading] = useState(true);
+	const [noteModalVisible, setNoteModalVisible] = useState(false);
+	const [noteText, setNoteText] = useState("");
+	const [noteTimestamp, setNoteTimestamp] = useState<number | null>(null);
+	const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+	const [resumedFromPosition, setResumedFromPosition] = useState(false);
+	const [previousPosition, setPreviousPosition] = useState<number | null>(null);
+	const [showReturnButton, setShowReturnButton] = useState(false);
+	const audioPlayerRef = useRef<AudioPlayerRef>(null);
+	
+	// Set current track when screen mounts
+	useEffect(() => {
+		setCurrentTrack({
+			filePath,
+			fileName,
+			coverImageUri,
+			itemId,
+		});
+		
+		return () => {
+			// Clear track when navigating away (optional - you might want to keep it)
+			// setCurrentTrack(null);
+		};
+	}, [filePath, fileName, coverImageUri, itemId, setCurrentTrack]);
+	
+	// Reset resumed indicator when file changes
+	useEffect(() => {
+		setResumedFromPosition(false);
+		setShowReturnButton(false);
+		setPreviousPosition(null);
+	}, [filePath]);
 
-  const [noteModalVisible, setNoteModalVisible] = useState(false);
-  const [noteText, setNoteText] = useState('');
-  const [noteTimestamp, setNoteTimestamp] = useState<number | null>(null);
-  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+	// Drawer state
+	const screenHeight = Dimensions.get("window").height;
+	const collapsedHeight = 120; // Height when collapsed (just header)
+	const expandedHeight = screenHeight * 0.75; // Height when expanded (75% of screen)
+	const drawerY = useRef(new Animated.Value(collapsedHeight)).current;
+	const [isExpanded, setIsExpanded] = useState(false);
 
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      const loaded = await getNotesForFile(filePath);
-      if (mounted) {
-        // sort newest first or by timestamp; pick what you like
-        loaded.sort((a, b) => a.timestamp - b.timestamp);
-        setNotes(loaded);
-        setNotesLoading(false);
-      }
-    })();
-    return () => {
-      mounted = false;
-    };
-  }, [filePath]);
+	// Initialize drawer position
+	useEffect(() => {
+		drawerY.setValue(collapsedHeight);
+	}, []);
 
-  const handleOpenNoteModal = (timestamp: number) => {
-    setNoteTimestamp(timestamp);
-    setNoteText('');
-    setEditingNoteId(null);
-    setNoteModalVisible(true);
-  };
+	// Toggle drawer between collapsed and expanded
+	const toggleDrawer = () => {
+		const targetHeight = isExpanded ? collapsedHeight : expandedHeight;
+		setIsExpanded(!isExpanded);
+		Animated.spring(drawerY, {
+			toValue: targetHeight,
+			useNativeDriver: false,
+			tension: 50,
+			friction: 8,
+		}).start();
+	};
 
-  const handleSaveNote = async () => {
-    if (noteTimestamp == null || noteText.trim().length === 0) {
-      setNoteModalVisible(false);
-      setEditingNoteId(null);
-      return;
-    }
+	useEffect(() => {
+		let mounted = true;
+		(async () => {
+			const loaded = await getNotesForFile(filePath);
+			if (mounted) {
+				loaded.sort((a, b) => a.timestamp - b.timestamp);
+				setNotes(loaded);
+				setNotesLoading(false);
+			}
+		})();
+		return () => {
+			mounted = false;
+		};
+	}, [filePath]);
 
-    if (editingNoteId) {
-      // editing an existing note
-      const updated = notes.map((n) =>
-        n.id === editingNoteId ? { ...n, text: noteText.trim() } : n
-      );
-      setNotes(updated);
-      await saveNotesForFile(filePath, updated);
-    } else {
-      // creating a new note
-      const newNote: Note = {
-        id: `${Date.now()}-${Math.floor(Math.random() * 9999)}`,
-        text: noteText.trim(),
-        timestamp: noteTimestamp,
-        createdAt: Date.now(),
-      };
+	const handleOpenNoteModal = (timestamp: number) => {
+		setNoteTimestamp(timestamp);
+		setNoteText("");
+		setEditingNoteId(null);
+		setNoteModalVisible(true);
+	};
 
-      const updated = [...notes, newNote].sort((a, b) => a.timestamp - b.timestamp);
-      setNotes(updated);
-      await saveNotesForFile(filePath, updated);
-    }
+	const handleSaveNote = async () => {
+		if (noteTimestamp == null || noteText.trim().length === 0) {
+			setNoteModalVisible(false);
+			setEditingNoteId(null);
+			return;
+		}
 
-    setNoteModalVisible(false);
-    setNoteText('');
-    setNoteTimestamp(null);
-    setEditingNoteId(null);
-  };
+		if (editingNoteId) {
+			const updated = notes.map((n) =>
+				n.id === editingNoteId ? { ...n, text: noteText.trim() } : n
+			);
+			setNotes(updated);
+			await saveNotesForFile(filePath, updated);
+		} else {
+			const newNote: Note = {
+				id: `${Date.now()}-${Math.floor(Math.random() * 9999)}`,
+				text: noteText.trim(),
+				timestamp: noteTimestamp,
+				createdAt: Date.now(),
+			};
+			const updated = [...notes, newNote].sort((a, b) => a.timestamp - b.timestamp);
+			setNotes(updated);
+			await saveNotesForFile(filePath, updated);
+		}
 
-  const handleDeleteNote = async (id: string) => {
-    const updated = notes.filter((n) => n.id !== id);
-    setNotes(updated);
-    await saveNotesForFile(filePath, updated);
-  };
+		setNoteModalVisible(false);
+		setNoteText("");
+		setNoteTimestamp(null);
+		setEditingNoteId(null);
+	};
 
-  const handleEditNote = (note: Note) => {
-    setNoteTimestamp(note.timestamp);
-    setNoteText(note.text);          
-    setEditingNoteId(note.id);
-    setNoteModalVisible(true);
-  };
+	const handleDeleteNote = async (id: string) => {
+		const updated = notes.filter((n) => n.id !== id);
+		setNotes(updated);
+		await saveNotesForFile(filePath, updated);
+	};
 
-  const handleCancelNote = () => {
-    setNoteModalVisible(false);
-    setNoteText('');
-    setNoteTimestamp(null);
-    setEditingNoteId(null);
-  };
+	const handleEditNote = (note: Note) => {
+		setNoteTimestamp(note.timestamp);
+		setNoteText(note.text);
+		setEditingNoteId(note.id);
+		setNoteModalVisible(true);
+	};
 
-  const handleNoteTimestampPress = (timestamp: number) => {
-    // here we can put a jumpback when the timestamp is pressed or maybe a short prelistening.
-  };
+	const handleCancelNote = () => {
+		setNoteModalVisible(false);
+		setNoteText("");
+		setNoteTimestamp(null);
+		setEditingNoteId(null);
+	};
 
+	const handleNotePress = async (note: Note) => {
+		// Save current position before jumping to note
+		const currentTime = audioPlayerRef.current?.getCurrentTime() ?? 0;
+		if (currentTime > 0) {
+			setPreviousPosition(currentTime);
+			setShowReturnButton(true);
+		}
+		// Seek to the note's timestamp and start playing if not already playing
+		await audioPlayerRef.current?.seekToTimestamp(note.timestamp, true);
+	};
 
-  return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Now Playing: {fileName}</Text>
+	const handleReturnToPreviousPosition = async () => {
+		if (previousPosition !== null) {
+			await audioPlayerRef.current?.seekToTimestamp(previousPosition, true);
+			setShowReturnButton(false);
+			setPreviousPosition(null);
+		}
+	};
 
-      {/* This is where your functional audio player component would go, 
-        using the filePath prop for playback.
-      */}
-      <AudioPlayer fileName={fileName} filePath={filePath} onAddNotePress={handleOpenNoteModal}
- />
+	const renderNoteItem = ({ item }: { item: Note }) => (
+		<TouchableOpacity
+			activeOpacity={0.7}
+			onPress={() => handleNotePress(item)}
+		>
+			<Card variant="outlined" style={playerScreenStyles.noteCard}>
+				<View style={playerScreenStyles.noteHeader}>
+					<View style={playerScreenStyles.timestampBadge}>
+						<Ionicons name="time-outline" size={12} color={colors.primary} />
+						<Typography variant="caption" color="accent" style={playerScreenStyles.timestampText}>
+							{formatTime(item.timestamp)}
+						</Typography>
+					</View>
+					<View style={playerScreenStyles.noteActions}>
+						<TouchableOpacity
+							style={playerScreenStyles.noteActionBtn}
+							onPress={() => handleEditNote(item)}
+						>
+							<Ionicons name="create-outline" size={16} color={colors.textSecondary} />
+						</TouchableOpacity>
+						<TouchableOpacity
+							style={playerScreenStyles.noteActionBtn}
+							onPress={() => handleDeleteNote(item.id)}
+						>
+							<Ionicons name="trash-outline" size={16} color={colors.error} />
+						</TouchableOpacity>
+					</View>
+				</View>
+				<Typography variant="body" style={playerScreenStyles.noteText}>
+					{item.text}
+				</Typography>
+				<Typography variant="caption" color="muted" style={playerScreenStyles.noteMeta}>
+					{new Date(item.createdAt).toLocaleDateString("en-US", {
+						month: "short",
+						day: "numeric",
+						hour: "2-digit",
+						minute: "2-digit",
+					})}
+				</Typography>
+			</Card>
+		</TouchableOpacity>
+	);
 
-       <View style={styles.notesHeader}>
-        <Text style={styles.notesTitle}>Notes</Text>
-        <Text style={styles.notesCount}>{notes.length} total</Text>
-      </View>
+	return (
+		<SafeAreaView style={playerScreenStyles.container}>
+			<StatusBar barStyle="light-content" backgroundColor={colors.background} />
 
-       {notesLoading ? (
-        <View style={styles.center}>
-          <ActivityIndicator />
-        </View>
-      ) : notes.length === 0 ? (
-        <Text style={styles.emptyNotesText}>
-          No notes yet. Tap "Add note" to create one.
-        </Text>
-      ) : (
-        <FlatList
-          style={styles.notesList}
-          data={notes}
-          keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <View style={styles.noteItem}>
-              <TouchableOpacity onPress={() => handleNoteTimestampPress(item.timestamp)}>
-                <Text style={styles.noteTimestamp}>{formatTime(item.timestamp)}</Text>
-              </TouchableOpacity>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.noteText}>{item.text}</Text>
-                <Text style={styles.noteMeta}>
-                  {new Date(item.createdAt).toLocaleString()}
-                </Text>
-              </View>
-              <TouchableOpacity
-                style={styles.iconButton}
-                onPress={() => handleEditNote(item)}
-              >
-                <Ionicons name="create-outline" size={20} color="#2980b9" />
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.iconButton}
-                onPress={() => handleDeleteNote(item.id)}
-              >
-                <Ionicons name="trash-outline" size={20} color="#e74c3c" />
-              </TouchableOpacity>
-            </View>
-          )}
-        />
-      )}
+			{/* Header */}
+			<View style={playerScreenStyles.header}>
+				<IconButton
+					icon="chevron-back"
+					onPress={() => navigation.goBack()}
+					variant="ghost"
+					size="md"
+				/>
+				<View style={playerScreenStyles.headerTitle}>
+					<View style={playerScreenStyles.headerTitleRow}>
+						<Typography variant="caption" color="muted">
+							NOW PLAYING
+						</Typography>
+						{resumedFromPosition && (
+							<View style={playerScreenStyles.resumeIndicator}>
+								<Ionicons name="return-down-back" size={10} color={colors.primary} />
+								<Typography variant="caption" color="accent" style={playerScreenStyles.resumeText}>
+									Resumed
+								</Typography>
+							</View>
+						)}
+					</View>
+					<Typography variant="body" weight="semiBold" numberOfLines={1}>
+						{fileName}
+					</Typography>
+				</View>
+				{showReturnButton ? (
+					<TouchableOpacity
+						onPress={handleReturnToPreviousPosition}
+						style={playerScreenStyles.returnButton}
+						activeOpacity={0.7}
+					>
+						<Ionicons name="arrow-undo" size={20} color={colors.primary} />
+					</TouchableOpacity>
+				) : (
+					<View style={{ width: 40 }} />
+				)}
+			</View>
 
-      <Modal
-        visible={noteModalVisible}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={handleCancelNote}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Add Note</Text>
-            {noteTimestamp != null && (
-              <Text style={styles.modalSubtitle}>
-                At {formatTime(noteTimestamp)}
-              </Text>
-            )}
+			{/* Audio Player */}
+			<AudioPlayer
+				ref={audioPlayerRef}
+				key={filePath} // Force remount when filePath changes
+				fileName={fileName}
+				filePath={filePath}
+				coverImageUri={coverImageUri}
+				itemId={itemId}
+				notes={notes}
+				onAddNotePress={handleOpenNoteModal}
+				onResumedFromPosition={() => setResumedFromPosition(true)}
+				autoPlay={true} // Auto-start playback when track loads
+			/>
 
-            <TextInput
-              style={styles.modalInput}
-              placeholder="Type your note here..."
-              value={noteText}
-              onChangeText={setNoteText}
-              multiline
-            />
+			{/* Notes Section - Toggleable Drawer */}
+			<Animated.View
+				style={[
+					playerScreenStyles.notesSection,
+					{
+						height: drawerY,
+						maxHeight: expandedHeight,
+					},
+				]}
+			>
+				{/* Tappable Header */}
+				<TouchableOpacity
+					activeOpacity={0.7}
+					onPress={toggleDrawer}
+					style={playerScreenStyles.notesHeaderContainer}
+				>
+					{/* Drag Handle Indicator */}
+					<View style={playerScreenStyles.dragHandleContainer}>
+						<View style={playerScreenStyles.dragHandle} />
+					</View>
 
-            <View style={styles.modalButtonsRow}>
-              <Button title="Cancel" onPress={handleCancelNote} />
-              <Button title="Save" onPress={handleSaveNote} />
-            </View>
-          </View>
-        </View>
-      </Modal>
+					<View style={playerScreenStyles.notesHeader}>
+						<View style={playerScreenStyles.notesHeaderLeft}>
+							<Ionicons name="document-text" size={20} color={colors.primary} />
+							<Typography variant="h3" style={playerScreenStyles.notesTitle}>
+								Notes
+							</Typography>
+						</View>
+						<View style={playerScreenStyles.notesHeaderRight}>
+							<Typography variant="caption" color="muted">
+								{notes.length} {notes.length === 1 ? "note" : "notes"}
+							</Typography>
+						</View>
+					</View>
+				</TouchableOpacity>
 
-    </View>
-  );
+				{notesLoading ? (
+					<View style={playerScreenStyles.notesLoading}>
+						<LoadingScreen message="Loading notes..." />
+					</View>
+				) : notes.length === 0 ? (
+					<View style={playerScreenStyles.emptyNotes}>
+						<Ionicons name="bookmark-outline" size={32} color={colors.textMuted} />
+						<Typography
+							variant="bodySmall"
+							color="muted"
+							align="center"
+							style={playerScreenStyles.emptyText}
+						>
+							No notes yet. Tap "Add Note" while listening to save your thoughts.
+						</Typography>
+					</View>
+				) : (
+					<View style={{ flex: 1 }}>
+						<FlatList
+							data={notes}
+							keyExtractor={(item) => item.id}
+							renderItem={renderNoteItem}
+							showsVerticalScrollIndicator={false}
+							contentContainerStyle={playerScreenStyles.notesList}
+							nestedScrollEnabled={true}
+							scrollEnabled={isExpanded}
+						/>
+					</View>
+				)}
+			</Animated.View>
+
+			{/* Note Modal */}
+			<Modal
+				visible={noteModalVisible}
+				animationType="slide"
+				transparent
+				onRequestClose={handleCancelNote}
+			>
+				<KeyboardAvoidingView
+					style={{ flex: 1 }}
+					behavior={Platform.OS === "ios" ? "padding" : "height"}
+					keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
+				>
+					<View style={playerScreenStyles.modalOverlay}>
+						<ScrollView
+							contentContainerStyle={{ flexGrow: 1, justifyContent: "flex-end" }}
+							keyboardShouldPersistTaps="handled"
+							showsVerticalScrollIndicator={false}
+							bounces={false}
+						>
+							<Card variant="elevated" style={playerScreenStyles.modalContent}>
+								<View style={playerScreenStyles.modalHeader}>
+									<Typography variant="h3">
+										{editingNoteId ? "Edit Note" : "Add Note"}
+									</Typography>
+									{noteTimestamp != null && (
+										<View style={playerScreenStyles.modalTimestamp}>
+											<Ionicons name="time" size={14} color={colors.primary} />
+											<Typography variant="bodySmall" color="accent">
+												{formatTime(noteTimestamp)}
+											</Typography>
+										</View>
+									)}
+								</View>
+
+								<Input
+									value={noteText}
+									onChangeText={setNoteText}
+									placeholder="Write your note here..."
+									multiline
+									numberOfLines={4}
+									style={playerScreenStyles.noteInput}
+									autoFocus={true}
+								/>
+
+								<View style={playerScreenStyles.modalActions}>
+									<Button title="Cancel" onPress={handleCancelNote} variant="ghost" />
+									<Button title="Save" onPress={handleSaveNote} variant="primary" />
+								</View>
+							</Card>
+						</ScrollView>
+					</View>
+				</KeyboardAvoidingView>
+			</Modal>
+		</SafeAreaView>
+	);
 };
-
-const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'flex-start', alignItems: 'center', paddingTop: 40, backgroundColor: '#eef' },
-  title: { fontSize: 24, marginBottom: 10, fontWeight: 'bold' },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  notesHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 20,
-    paddingHorizontal: 20,
-    width: '100%',
-    justifyContent: 'space-between',
-  },
-  notesTitle: { fontSize: 20, fontWeight: '600' },
-  notesCount: { fontSize: 14, color: '#555' },
-  emptyNotesText: {
-    marginTop: 10,
-    paddingHorizontal: 20,
-    textAlign: 'center',
-    color: '#666',
-  },
-  notesList: {
-    marginTop: 10,
-    width: '100%',
-    paddingHorizontal: 20,
-  },
-  noteItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#ddd',
-    gap: 10,
-  },
-  noteTimestamp: {
-    fontWeight: 'bold',
-    marginRight: 10,
-    minWidth: 80,
-  },
-  noteText: {
-    fontSize: 14,
-    color: '#222',
-  },
-  noteMeta: {
-    marginTop: 4,
-    fontSize: 11,
-    color: '#888',
-  },
-
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    padding: 20,
-  },
-  modalContent: {
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    padding: 20,
-  },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  modalSubtitle: {
-    fontSize: 14,
-    color: '#555',
-    marginBottom: 10,
-  },
-  modalInput: {
-    minHeight: 80,
-    borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
-    padding: 10,
-    textAlignVertical: 'top',
-    marginBottom: 15,
-  },
-  modalButtonsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  path: { fontSize: 14, color: '#666', marginBottom: 30 },
-  iconButton: {
-    paddingHorizontal: 6,
-    paddingVertical: 4,
-  },
-});
 
 export default PlayerScreen;

@@ -1,27 +1,22 @@
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
-import Audio from './src/compoments/AudioPlayer';
-import { createStaticNavigation } from '@react-navigation/native';
-import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import RootStack from './src/navigation/RootStack';
 import { NavigationContainer } from '@react-navigation/native';
-
-
+import { SettingsProvider } from './src/context/SettingsContext';
+import { PlaybackProvider } from './src/context/PlaybackContext';
+import { AlertProvider } from './src/components/ui/AlertManager';
+import { colors } from './src/theme';
 
 export default function App() {
   return (
-    <NavigationContainer>
-      {/* RootStack contains all your configured screens (Home, Shelf, Player, Profile) */}
-      <RootStack />
-    </NavigationContainer>
+    <SettingsProvider>
+      <PlaybackProvider>
+        <AlertProvider>
+          <NavigationContainer>
+            <StatusBar style="auto" backgroundColor={colors.background} />
+            <RootStack />
+          </NavigationContainer>
+        </AlertProvider>
+      </PlaybackProvider>
+    </SettingsProvider>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-});

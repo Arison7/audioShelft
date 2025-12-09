@@ -1,80 +1,150 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
 	View,
-	Text,
-	StyleSheet,
-	Button,
 	ScrollView,
+	Modal,
+	SafeAreaView,
+	StatusBar,
+	Image,
 	TouchableOpacity,
-	ActivityIndicator,
-	Alert,
+	KeyboardAvoidingView,
 	Platform,
-	TextInput,
 } from "react-native";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
-import {
-	pick,
-	pickDirectory,
-	errorCodes,
-	isErrorWithCode,
-} from "@react-native-documents/picker";
+import * as DocumentPicker from "expo-document-picker";
 import { RootStackParamList } from "../navigation/types";
 import { Directory, File } from "expo-file-system";
 
+// Theme & Components
+import { colors, shelfScreenStyles } from "../theme";
+import {
+	Typography,
+	Button,
+	Input,
+	EmptyState,
+	LoadingScreen,
+	Card,
+	IconButton,
+	useAlert,
+	PatternSelector,
+} from "../components/ui";
+import { AudiobookCard, AudiobookGridCard, FolderCard, ShelfView } from "../components";
+import { useSettings } from "../context/SettingsContext";
+import { usePlayback } from "../context/PlaybackContext";
+import { pickCoverImage } from "../utils/coverImage";
+import CoverImage from "../components/CoverImage";
+import MiniAudioPlayer from "../components/MiniAudioPlayer";
+
+// Helper to get pattern index from ID (same as ShelfView)
+const getPatternIndex = (id: string): number => {
+	let hash = 0;
+	for (let i = 0; i < id.length; i++) {
+		hash = ((hash << 5) - hash) + id.charCodeAt(i);
+		hash = hash & hash;
+	}
+	return Math.abs(hash) % 12; // 12 different patterns
+};
+
+// ============================================
+// SAMPLE DATA - Remove this section for production
+// ============================================
+const getSampleMediaItems = (): MediaItem[] => {
+	return [
+		{
+			id: generateUniqueId(),
+			name: "Pride and Prejudice (Sample)",
+			permanentUri: "asset://pride_and_prejudice_sample",
+			timestamp: Date.now(),
+		},
+		{
+			id: generateUniqueId(),
+			name: "Sherlock Holmes (Sample)",
+			permanentUri: "asset://sherlock_holmes_sample",
+			timestamp: Date.now() - 1000,
+		},
+		{
+			id: generateUniqueId(),
+			name: "The Great Gatsby (Sample)",
+			permanentUri: "asset://pride_and_prejudice_sample",
+			timestamp: Date.now() - 2000,
+		},
+		{
+			id: generateUniqueId(),
+			name: "Moby Dick (Sample)",
+			permanentUri: "asset://sherlock_holmes_sample",
+			timestamp: Date.now() - 3000,
+		},
+		{
+			id: generateUniqueId(),
+			name: "1984 (Sample)",
+			permanentUri: "asset://pride_and_prejudice_sample",
+			timestamp: Date.now() - 4000,
+		},
+		{
+			id: generateUniqueId(),
+			name: "To Kill a Mockingbird (Sample)",
+			permanentUri: "asset://sherlock_holmes_sample",
+			timestamp: Date.now() - 5000,
+		},
+	];
+};
+// ============================================
+
 type ShelfProps = NativeStackScreenProps<RootStackParamList, "Shelf">;
 
-// --- ID Generation Replacement ---
-// Combines current timestamp with a small random number to prevent collisions
 const generateUniqueId = (): string => {
 	return `${Date.now()}-${Math.floor(Math.random() * 9999)}`;
 };
 
 const ASYNC_STORAGE_KEY = "@MediaShelf:list";
 
-// Audio File Metadata Structure
 export type MediaItem = {
 	id: string;
 	name: string;
 	permanentUri: string;
 	timestamp: number;
-}
+	coverImageUri?: string; // Optional cover image URI
+	patternIndex?: number; // Pattern index for books without cover (0-5)
+};
+
 export type ShelfItem = MediaItem & {
 	itemCount: number;
 	sortType: "name" | "date";
-}
+};
+
 const handleError = (err: unknown) => {
-	if (isErrorWithCode(err)) {
-		switch (err.code) {
-			case errorCodes.IN_PROGRESS:
-				console.warn(
-					"user attempted to present a picker, but a previous one was already presented"
-				);
-				break;
-			case errorCodes.UNABLE_TO_OPEN_FILE_TYPE:
-				break;
-			case errorCodes.OPERATION_CANCELED:
-				// ignore
-				break;
-			default:
-				console.error(err);
+	if (err instanceof Error) {
+		if (err.message.includes("User canceled") || err.message.includes("cancelled")) {
+			return; // User cancelled, don't show error
 		}
-	} else {
-		console.error(err);
 	}
+	console.error("Document picker error:", err);
 };
 
 const ShelfScreen: React.FC<ShelfProps> = ({ navigation }) => {
+	const { settings } = useSettings();
+	const { setCurrentTrack } = usePlayback();
+	const { showAlert } = useAlert();
+	const isGridLayout = settings.homeLayout === "grid";
+	const isShelfLayout = settings.homeLayout === "shelf";
+
 	const [mediaList, setMediaList] = useState<(MediaItem | ShelfItem)[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [isPicking, setIsPicking] = useState(false);
+	const [searchQuery, setSearchQuery] = useState("");
 
-	// for inline editing of names
-	const [editingId, setEditingId] = useState<string | null>(null);
-	const [editingText, setEditingText] = useState<string>("");
+	// Edit modal state
+	const [editModalVisible, setEditModalVisible] = useState(false);
+	const [editingItem, setEditingItem] = useState<MediaItem | ShelfItem | null>(null);
+	const [editingText, setEditingText] = useState("");
+	const [editingCoverUri, setEditingCoverUri] = useState<string | undefined>(undefined);
+	const [editingPatternIndex, setEditingPatternIndex] = useState<number | undefined>(undefined);
 
-	// Load Data from AsyncStorage
+	// Action sheet for grid items
+	const [actionSheetItem, setActionSheetItem] = useState<MediaItem | ShelfItem | null>(null);
+
 	const loadShelf = useCallback(async () => {
 		try {
 			const storedList = await AsyncStorage.getItem(ASYNC_STORAGE_KEY);
@@ -82,488 +152,525 @@ const ShelfScreen: React.FC<ShelfProps> = ({ navigation }) => {
 				const items: (MediaItem | ShelfItem)[] = JSON.parse(storedList);
 				items.sort((a, b) => b.timestamp - a.timestamp);
 				setMediaList(items);
+			} else {
+				// ============================================
+				// SAMPLE DATA - Remove for production
+				// ============================================
+				const sampleItems = getSampleMediaItems();
+				setMediaList(sampleItems);
+				await AsyncStorage.setItem(ASYNC_STORAGE_KEY, JSON.stringify(sampleItems));
+				// ============================================
 			}
 		} catch (e) {
-			console.error("Failed to load shelf from AsyncStorage:", e);
+			console.error("Failed to load shelf:", e);
 		} finally {
 			setLoading(false);
 		}
 	}, []);
 
-	// Save Data to AsyncStorage
 	const saveShelf = useCallback(async (items: (MediaItem | ShelfItem)[]) => {
 		try {
-			await AsyncStorage.setItem(
-				ASYNC_STORAGE_KEY,
-				JSON.stringify(items)
-			);
+			await AsyncStorage.setItem(ASYNC_STORAGE_KEY, JSON.stringify(items));
 		} catch (e) {
-			console.error("Failed to save shelf to AsyncStorage:", e);
+			console.error("Failed to save shelf:", e);
 		}
 	}, []);
 
-	// Load shelf on component mount
 	useEffect(() => {
 		loadShelf();
 	}, [loadShelf]);
 
-	const handleAddDictionary = async () => {
-		setIsPicking(true);
-		try {
-			const result = await pickDirectory({
-				requestLongTermAccess: true,
-			});
-			// Iterate through files in the selected directory
-			const directory = new Directory(result.uri);
-      const fileCount = directory.list().filter(file => file instanceof File ).length;
-      const newShelf : ShelfItem = {
-        id: generateUniqueId(),
-        name: directory.name,
-        permanentUri: result.uri,
-        timestamp: Date.now(),
-        itemCount: fileCount, // Placeholder, will be updated
-        sortType: "date", // Default sort type
-      }
-      // Update the medial List 
-      setMediaList((prev) => [newShelf, ...prev]);
-      await saveShelf([newShelf, ...mediaList]);
-
-
-		} catch (error) {
-			handleError(error);
-		}
-
-		setIsPicking(false);
+	const handleAddDirectory = async () => {
+		// Note: expo-document-picker doesn't support directory picking
+		// For now, show an alert that this feature isn't available
+		showAlert({
+			title: "Directory Selection",
+			message: "Directory selection is not available with the current document picker. Please add audio files individually.",
+			buttons: [{ text: "OK" }],
+		});
 	};
 
 	const handleAddFile = async () => {
 		setIsPicking(true);
 		try {
-			const [result] = await pick({
-				mode: "open",
+			const result = await DocumentPicker.getDocumentAsync({
 				type: "audio/*",
-				requestLongTermAccess: true,
+				copyToCacheDirectory: true,
 			});
-			if (result.error === null && result.name) {
-				let externalUri = result.uri;
-				const fileName = result.name;
-
+			
+			if (!result.canceled && result.assets && result.assets.length > 0) {
+				const asset = result.assets[0];
 				const newItem: MediaItem = {
 					id: generateUniqueId(),
-					name: fileName,
-					permanentUri: externalUri, // Store the (now persistently accessible) URI
+					name: asset.name || "Unknown Audio",
+					permanentUri: asset.uri,
 					timestamp: Date.now(),
 				};
-
 				const updatedList = [newItem, ...mediaList];
 				setMediaList(updatedList);
-				await saveShelf(updatedList); // Persist to local storage
+				await saveShelf(updatedList);
 			}
 		} catch (error: any) {
-			// we don't need to alert on user cancellation
-			if (error.name !== "UserCancelledError") {
-				console.error("Error adding file to shelf:", error);
+			if (error.message && !error.message.includes("cancel")) {
+				console.error("Error adding file:", error);
 			}
 		} finally {
 			setIsPicking(false);
 		}
 	};
 
-	// Support deletion for both MediaItem and ShelfItem
-	const handleDeleteItem = async (itemToDelete: MediaItem | ShelfItem) => {
-		Alert.alert(
-			"Delete",
-			`Are you sure you want to remove "${itemToDelete.name}"?`,
-			[
+	const handleDeleteItem = (item: MediaItem | ShelfItem) => {
+		showAlert({
+			title: "Remove Item",
+			message: `Are you sure you want to remove "${item.name}"?`,
+			buttons: [
 				{ text: "Cancel", style: "cancel" },
 				{
-					text: "Delete",
+					text: "Remove",
 					style: "destructive",
 					onPress: async () => {
-						const updatedList = mediaList.filter(
-							(item) => item.id !== itemToDelete.id
-						);
+						const updatedList = mediaList.filter((i) => i.id !== item.id);
 						setMediaList(updatedList);
 						await saveShelf(updatedList);
 					},
 				},
-			]
-		);
-	};
-
-	// Edit a name inline
-	const startEditName = (item: MediaItem | ShelfItem) => {
-		setEditingId(item.id);
-		setEditingText(item.name);
-	};
-
-	const cancelEditName = () => {
-		setEditingId(null);
-		setEditingText("");
-	};
-
-	const saveEditedName = async () => {
-		if (!editingId) return;
-		const trimmed = editingText.trim();
-		if (trimmed.length === 0) {
-			Alert.alert("Name required", "Please enter a valid name.");
-			return;
-		}
-
-		const updated = mediaList.map((it) =>
-			it.id === editingId ? { ...it, name: trimmed } : it
-		);
-		setMediaList(updated);
-		await saveShelf(updated);
-		setEditingId(null);
-		setEditingText("");
-	};
-
-	// --- 5. Navigation Logic ---
-	const handlePlayItem = (item: MediaItem) => {
-		navigation.navigate("Player", {
-			filePath: item.permanentUri,
-			fileName: item.name,
+			],
 		});
 	};
 
-	// Placeholder handlers for shelf-specific actions (not implemented yet)
+	const openEditModal = (item: MediaItem | ShelfItem) => {
+		setEditingItem(item);
+		setEditingText(item.name);
+		// Set cover URI and pattern for MediaItems only
+		if (!("itemCount" in item)) {
+			const mediaItem = item as MediaItem;
+			setEditingCoverUri(mediaItem.coverImageUri);
+			// Initialize patternIndex: use stored value, or default from ID if no cover
+			if (mediaItem.coverImageUri) {
+				setEditingPatternIndex(undefined);
+			} else {
+				setEditingPatternIndex(mediaItem.patternIndex ?? getPatternIndex(item.id));
+			}
+		} else {
+			setEditingCoverUri(undefined);
+			setEditingPatternIndex(undefined);
+		}
+		setEditModalVisible(true);
+	};
+
+	const closeEditModal = () => {
+		setEditModalVisible(false);
+		setEditingItem(null);
+		setEditingText("");
+		setEditingCoverUri(undefined);
+		setEditingPatternIndex(undefined);
+	};
+
+	const handlePickCoverImage = async () => {
+		const imageUri = await pickCoverImage();
+		if (imageUri) {
+			setEditingCoverUri(imageUri);
+			// Clear pattern when cover is added
+			setEditingPatternIndex(undefined);
+		}
+	};
+
+	const saveEditedName = async () => {
+		if (!editingItem) return;
+		const trimmed = editingText.trim();
+		if (trimmed.length === 0) {
+			showAlert({
+				title: "Name required",
+				message: "Please enter a valid name.",
+				buttons: [{ text: "OK" }],
+			});
+			return;
+		}
+		const updated = mediaList.map((it) => {
+			if (it.id === editingItem.id) {
+				// Only update coverImageUri and patternIndex for MediaItem (not ShelfItem)
+				if (!("itemCount" in it)) {
+					// If there's a cover, clear pattern. If no cover, use the selected pattern
+					const finalPatternIndex = editingCoverUri ? undefined : editingPatternIndex;
+					return { 
+						...it, 
+						name: trimmed, 
+						coverImageUri: editingCoverUri,
+						patternIndex: finalPatternIndex,
+					};
+				}
+				return { ...it, name: trimmed };
+			}
+			return it;
+		});
+		setMediaList(updated);
+		await saveShelf(updated);
+		closeEditModal();
+	};
+
+	const handlePlayItem = (item: MediaItem) => {
+		setCurrentTrack({
+			filePath: item.permanentUri,
+			fileName: item.name,
+			coverImageUri: item.coverImageUri,
+			itemId: item.id,
+		});
+		navigation.navigate("Player", {
+			filePath: item.permanentUri,
+			fileName: item.name,
+			coverImageUri: item.coverImageUri,
+			itemId: item.id,
+		});
+	};
+
 	const handleOpenShelf = (shelf: ShelfItem) => {
-		// Not implemented yet; placeholder to comply with UI
-		Alert.alert("Open Shelf", `"${shelf.name}" - open not implemented yet.`);
+		showAlert({
+			title: "Coming Soon",
+			message: `"${shelf.name}" folder view is not implemented yet.`,
+			buttons: [{ text: "OK" }],
+		});
 	};
 
 	const handlePlayShelf = (shelf: ShelfItem) => {
-		// Not implemented yet; placeholder to comply with UI
-		Alert.alert("Play Shelf", `"${shelf.name}" - play not implemented yet.`);
+		showAlert({
+			title: "Coming Soon",
+			message: `Play all in "${shelf.name}" is not implemented yet.`,
+			buttons: [{ text: "OK" }],
+		});
+	};
+
+	const showItemActions = (item: MediaItem | ShelfItem) => {
+		const isShelf = "itemCount" in item;
+		showAlert({
+			title: item.name,
+			message: "Choose an action",
+			buttons: [
+				{
+					text: isShelf ? "Open" : "Play",
+					onPress: () => isShelf ? handleOpenShelf(item as ShelfItem) : handlePlayItem(item as MediaItem),
+				},
+				{ text: "Rename", onPress: () => openEditModal(item) },
+				{ 
+					text: "Delete", 
+					style: "destructive", 
+					onPress: () => {
+						// Delay to ensure the first alert is fully dismissed before showing the delete confirmation
+						setTimeout(() => {
+							handleDeleteItem(item);
+						}, 250);
+					}
+				},
+				{ text: "Cancel", style: "cancel" },
+			],
+		});
 	};
 
 	if (loading || isPicking) {
 		return (
-			<View style={styles.loadingContainer}>
-				<ActivityIndicator size="large" color="#3498db" />
-				<Text style={{ marginTop: 10 }}>
-					{isPicking
-						? "Adding reference & securing access..."
-						: "Loading Shelf..."}
-				</Text>
-			</View>
+			<LoadingScreen
+				message={isPicking ? "Adding to library..." : "Loading your library..."}
+			/>
 		);
 	}
 
-	return (
-		<View style={styles.container}>
-			<ScrollView style={styles.listContainer}>
-				{mediaList.length === 0 ? (
-					<Text style={styles.emptyText}>
-						Tap the button below to add your first audiobook
-						reference!
-					</Text>
-				) : (
-					mediaList.map((item) => {
-						// Use unique keys per list item (prefix by type)
-						const listKey = `${"itemCount" in item ? "shelf" : "media"}-${
-							item.id
-						}`;
+	// Filter items based on search query
+	const filteredList = searchQuery.trim()
+		? mediaList.filter((item) =>
+				item.name.toLowerCase().includes(searchQuery.toLowerCase())
+		  )
+		: mediaList;
 
-						// Render ShelfItem (visually distinct)
-						if ("itemCount" in item) {
-							const shelf = item as ShelfItem;
-							return (
-								<View key={listKey} style={styles.shelfItem}>
-									<View style={styles.shelfHeader}>
-										{editingId === shelf.id ? (
-											<View style={styles.editRow}>
-												<TextInput
-													value={editingText}
-													onChangeText={setEditingText}
-													style={styles.editInput}
-													placeholder="Shelf name"
+	// Separate folders and media items
+	const folders = filteredList.filter((item) => "itemCount" in item) as ShelfItem[];
+	const mediaItems = filteredList.filter((item) => !("itemCount" in item)) as MediaItem[];
+
+	return (
+		<SafeAreaView style={shelfScreenStyles.container}>
+			<StatusBar barStyle="light-content" backgroundColor={colors.background} />
+
+			{/* Header */}
+			<View style={shelfScreenStyles.header}>
+				<View>
+					<Typography variant="h2">Library</Typography>
+					<Typography variant="bodySmall" color="muted" style={shelfScreenStyles.subtitle}>
+						{searchQuery.trim() 
+							? `${filteredList.length} of ${mediaList.length} ${mediaList.length === 1 ? "item" : "items"}`
+							: `${mediaList.length} ${mediaList.length === 1 ? "item" : "items"}`
+						}
+					</Typography>
+				</View>
+				<View style={shelfScreenStyles.headerActions}>
+					<IconButton
+						icon="add-circle-outline"
+						onPress={() => {
+							showAlert({
+								title: "Add to Library",
+								message: "Choose what you want to add",
+								buttons: [
+									{
+										text: "Add Audio File",
+										onPress: handleAddFile,
+									},
+									{
+										text: "Add Folder",
+										onPress: handleAddDirectory,
+									},
+									{
+										text: "Cancel",
+										style: "cancel",
+									},
+								],
+							});
+						}}
+						variant="ghost"
+						size="md"
+					/>
+					<IconButton
+						icon="settings-outline"
+						onPress={() => navigation.navigate("Settings")}
+						variant="ghost"
+						size="md"
+					/>
+				</View>
+			</View>
+
+			{/* Search Bar */}
+			<View style={shelfScreenStyles.searchContainer}>
+				<View style={shelfScreenStyles.searchInputWrapper}>
+					<Ionicons 
+						name="search-outline" 
+						size={20} 
+						color={colors.textMuted} 
+						style={shelfScreenStyles.searchIcon}
+					/>
+					<Input
+						value={searchQuery}
+						onChangeText={setSearchQuery}
+						placeholder="Search your library..."
+						style={shelfScreenStyles.searchInput}
+						containerStyle={shelfScreenStyles.searchInputContainer}
+					/>
+					{searchQuery.length > 0 && (
+						<TouchableOpacity
+							onPress={() => setSearchQuery("")}
+							style={shelfScreenStyles.clearButton}
+							activeOpacity={0.7}
+						>
+							<Ionicons name="close-circle" size={20} color={colors.textMuted} />
+						</TouchableOpacity>
+					)}
+				</View>
+			</View>
+
+			{/* Content */}
+			{mediaList.length === 0 ? (
+				<EmptyState
+					icon="library-outline"
+					title="Your Library is Empty"
+					description="Add audiobooks or folders to start building your collection"
+					actionLabel="Add Audiobook"
+					onAction={handleAddFile}
+				/>
+			) : (
+				<ScrollView
+					style={shelfScreenStyles.scrollView}
+					contentContainerStyle={shelfScreenStyles.scrollContent}
+					showsVerticalScrollIndicator={false}
+				>
+					{/* Folders Section (always list view) */}
+					{folders.length > 0 && (
+						<View style={shelfScreenStyles.section}>
+							<Typography variant="label" color="muted" style={shelfScreenStyles.sectionTitle}>
+								Folders
+							</Typography>
+							{folders.map((shelf) => (
+								<FolderCard
+									key={`shelf-${shelf.id}`}
+									title={shelf.name}
+									itemCount={shelf.itemCount}
+									sortType={shelf.sortType}
+									onOpen={() => handleOpenShelf(shelf)}
+									onPlay={() => handlePlayShelf(shelf)}
+									onEdit={() => openEditModal(shelf)}
+									onDelete={() => handleDeleteItem(shelf)}
+								/>
+							))}
+						</View>
+					)}
+
+					{/* Audiobooks Section */}
+					{mediaItems.length > 0 && (
+						<View style={shelfScreenStyles.section}>
+							{folders.length > 0 && (
+								<Typography variant="label" color="muted" style={shelfScreenStyles.sectionTitle}>
+									Audiobooks
+								</Typography>
+							)}
+
+							{isShelfLayout ? (
+								// Shelf Layout
+								<ShelfView
+									items={mediaItems}
+									onPlay={handlePlayItem}
+									onLongPress={showItemActions}
+								/>
+							) : isGridLayout ? (
+								// Grid Layout
+								<View style={shelfScreenStyles.gridContainer}>
+									{mediaItems.map((media) => (
+										<AudiobookGridCard
+											key={`media-${media.id}`}
+											title={media.name}
+											timestamp={media.timestamp}
+											coverImageUri={media.coverImageUri}
+											itemId={media.id}
+											filePath={media.permanentUri}
+											onPlay={() => handlePlayItem(media)}
+											onLongPress={() => showItemActions(media)}
+										/>
+									))}
+								</View>
+							) : (
+								// List Layout
+								mediaItems.map((media) => (
+									<AudiobookCard
+										key={`media-${media.id}`}
+										title={media.name}
+										timestamp={media.timestamp}
+										coverImageUri={media.coverImageUri}
+										itemId={media.id}
+										filePath={media.permanentUri}
+										onPlay={() => handlePlayItem(media)}
+										onEdit={() => openEditModal(media)}
+										onDelete={() => handleDeleteItem(media)}
+									/>
+								))
+							)}
+						</View>
+					)}
+				</ScrollView>
+			)}
+
+			{/* Mini Audio Player */}
+			<MiniAudioPlayer />
+
+			{/* Edit Modal */}
+			<Modal
+				visible={editModalVisible}
+				animationType="slide"
+				transparent
+				onRequestClose={closeEditModal}
+			>
+				<KeyboardAvoidingView
+					style={{ flex: 1 }}
+					behavior={Platform.OS === "ios" ? "padding" : "height"}
+					keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
+				>
+					<View style={shelfScreenStyles.modalOverlay}>
+						<ScrollView
+							contentContainerStyle={{ flexGrow: 1, justifyContent: "flex-end" }}
+							keyboardShouldPersistTaps="handled"
+							showsVerticalScrollIndicator={false}
+							bounces={false}
+						>
+							<Card variant="elevated" style={shelfScreenStyles.modalContent}>
+								<Typography variant="h3" style={shelfScreenStyles.modalTitle}>
+									Edit Book
+								</Typography>
+								
+								{/* Cover Image - Show for MediaItems only */}
+								{editingItem && !("itemCount" in editingItem) && (
+									<View style={shelfScreenStyles.coverImageSection}>
+										<Typography variant="caption" color="secondary" style={shelfScreenStyles.coverLabel}>
+											Cover Image
+										</Typography>
+										<TouchableOpacity
+											style={shelfScreenStyles.coverImageContainer}
+											onPress={handlePickCoverImage}
+											activeOpacity={0.8}
+										>
+											{editingCoverUri ? (
+												<Image
+													source={{ uri: editingCoverUri }}
+													style={shelfScreenStyles.coverImagePreview}
+													resizeMode="cover"
 												/>
-												<Button title="Save" onPress={saveEditedName} />
-												<Button title="Cancel" onPress={cancelEditName} />
+											) : (
+												<CoverImage
+													uri={(editingItem as MediaItem).coverImageUri}
+													itemId={editingItem.id}
+													size={120}
+												/>
+											)}
+											<View style={shelfScreenStyles.coverImageOverlay}>
+												<Ionicons name="camera" size={24} color={colors.textPrimary} />
+												<Typography
+													variant="caption"
+													color="primary"
+													style={shelfScreenStyles.coverImageText}
+												>
+													{editingCoverUri || (editingItem as MediaItem).coverImageUri ? "Change" : "Add Cover"}
+												</Typography>
 											</View>
-										) : (
-											<>
-												<View style={styles.shelfInfo}>
-													<Text
-														style={styles.shelfName}
-														numberOfLines={1}
-													>
-														{shelf.name}
-													</Text>
-													<Text style={styles.shelfMeta}>
-														{shelf.itemCount} items • sorted by {shelf.sortType}
-													</Text>
-												</View>
-												<View style={styles.shelfActions}>
-													<TouchableOpacity
-														style={styles.smallButton}
-														onPress={() => startEditName(shelf)}
-													>
-														<Text style={styles.smallButtonText}>Edit</Text>
-													</TouchableOpacity>
-													<TouchableOpacity
-														style={styles.openButton}
-														onPress={() => handleOpenShelf(shelf)}
-													>
-														<Text style={styles.openButtonText}>Open</Text>
-													</TouchableOpacity>
-													<TouchableOpacity
-														style={styles.playButton}
-														onPress={() => handlePlayShelf(shelf)}
-													>
-														<Text style={styles.playButtonText}>Play</Text>
-													</TouchableOpacity>
-													<TouchableOpacity
-														onPress={() => handleDeleteItem(shelf)}
-														style={styles.deleteButton}
-													>
-														<Text style={{ color: "#e74c3c", fontSize: 14 }}>
-															&times;
-														</Text>
-													</TouchableOpacity>
-												</View>
-											</>
+										</TouchableOpacity>
+										{(editingCoverUri || (editingItem as MediaItem).coverImageUri) && (
+											<TouchableOpacity
+												onPress={() => {
+													setEditingCoverUri(undefined);
+													// Restore pattern when cover is removed
+													if (editingItem && !("itemCount" in editingItem)) {
+														const item = editingItem as MediaItem;
+														setEditingPatternIndex(item.patternIndex ?? getPatternIndex(item.id));
+													}
+												}}
+												style={shelfScreenStyles.removeCoverButton}
+											>
+												<Typography variant="caption" color="error">
+													Remove Cover
+												</Typography>
+											</TouchableOpacity>
 										)}
 									</View>
-								</View>
-							);
-						}
+								)}
 
-						// Render MediaItem
-						const media = item as MediaItem;
-						return (
-							<View key={listKey} style={styles.mediaItem}>
-								<View style={styles.mediaDetails}>
-									{editingId === media.id ? (
-										<View style={styles.editRow}>
-											<TextInput
-												value={editingText}
-												onChangeText={setEditingText}
-												style={styles.editInput}
-												placeholder="File name"
-											/>
-											<Button title="Save" onPress={saveEditedName} />
-											<Button title="Cancel" onPress={cancelEditName} />
-										</View>
-									) : (
-										<>
-											<Text style={styles.mediaName} numberOfLines={1}>
-												{media.name}
-											</Text>
-											<Text style={styles.mediaDate}>
-												{new Date(media.timestamp).toLocaleDateString()}
-											</Text>
-										</>
-									)}
-								</View>
-
-								<View style={styles.rowActions}>
-									<Button
-										title="Play"
-										onPress={() => handlePlayItem(media)}
+								{/* Pattern Selector - Show only when no cover image */}
+								{editingItem && !("itemCount" in editingItem) && !editingCoverUri && !(editingItem as MediaItem).coverImageUri && (
+									<PatternSelector
+										selectedIndex={editingPatternIndex ?? getPatternIndex(editingItem.id)}
+										onSelect={(index) => setEditingPatternIndex(index)}
 									/>
-									<TouchableOpacity
-										onPress={() => startEditName(media)}
-										style={styles.smallButton}
-									>
-										<Text style={styles.smallButtonText}>Edit</Text>
-									</TouchableOpacity>
-									<TouchableOpacity
-										onPress={() => handleDeleteItem(media)}
-										style={styles.deleteButton}
-									>
-										<Text style={{ color: "#e74c3c", fontSize: 14 }}>
-											&times; Remove
-										</Text>
-									</TouchableOpacity>
-								</View>
-							</View>
-						);
-					})
-				)}
-			</ScrollView>
+								)}
 
-			<View style={styles.addButtonContainer}>
-				<Button
-					title="Add New Audiobook Reference ➕"
-					onPress={handleAddFile}
-					disabled={isPicking}
-				/>
-				<Button
-					title="Add New Directory Reference ➕"
-					onPress={handleAddDictionary}
-					disabled={isPicking}
-				/>
-			</View>
-		</View>
+								{/* Name Input */}
+								<Input
+									value={editingText}
+									onChangeText={setEditingText}
+									placeholder="Enter name..."
+									label="Book Name"
+									autoFocus={true}
+								/>
+
+								<View style={shelfScreenStyles.modalActions}>
+									<Button
+										title="Cancel"
+										onPress={closeEditModal}
+										variant="ghost"
+										size="md"
+									/>
+									<Button
+										title="Save"
+										onPress={saveEditedName}
+										variant="primary"
+										size="md"
+									/>
+								</View>
+							</Card>
+						</ScrollView>
+					</View>
+				</KeyboardAvoidingView>
+			</Modal>
+		</SafeAreaView>
 	);
 };
-
-const styles = StyleSheet.create({
-	container: { flex: 1, padding: 20, backgroundColor: "#f9f9f9" },
-	loadingContainer: {
-		flex: 1,
-		justifyContent: "center",
-		alignItems: "center",
-	},
-	header: {
-		fontSize: 26,
-		fontWeight: "bold",
-		marginBottom: 15,
-		color: "#2c3e50",
-	},
-	listContainer: {
-		flex: 1,
-		width: "100%",
-		borderWidth: 1,
-		borderColor: "#ccc",
-		borderRadius: 8,
-		padding: 10,
-		backgroundColor: "#fff",
-	},
-	mediaItem: {
-		flexDirection: "row",
-		alignItems: "center",
-		justifyContent: "space-between",
-		padding: 15,
-		borderBottomWidth: 1,
-		borderBottomColor: "#eee",
-	},
-	mediaDetails: { flex: 1, marginRight: 10 },
-	mediaName: { fontSize: 16, fontWeight: "600" },
-	mediaDate: { fontSize: 12, color: "#999" },
-	deleteButton: {
-		marginLeft: 10,
-		padding: 5,
-		borderRadius: 5,
-		borderWidth: 1,
-		borderColor: "#e74c3c",
-		alignItems: "center",
-		justifyContent: "center",
-	},
-	emptyText: {
-		textAlign: "center",
-		padding: 20,
-		fontSize: 16,
-		color: "#888",
-	},
-	addButtonContainer: {
-		paddingVertical: 10,
-		borderTopWidth: 1,
-		borderTopColor: "#eee",
-	},
-	warningBox: {
-		flexDirection: "row",
-		alignItems: "center",
-		backgroundColor: "#fbeaea",
-		padding: 10,
-		borderRadius: 8,
-		marginBottom: 15,
-		borderLeftWidth: 4,
-		borderLeftColor: "#e74c3c",
-	},
-	warningText: {
-		marginLeft: 10,
-		fontSize: 12,
-		color: "#c0392b",
-		flex: 1,
-	},
-
-	/* Shelf item specific styles (visually different) */
-	shelfItem: {
-		padding: 14,
-		borderBottomWidth: 1,
-		borderBottomColor: "#eee",
-		backgroundColor: "#fbfdff",
-		borderRadius: 6,
-		marginBottom: 8,
-	},
-	shelfHeader: {
-		flexDirection: "row",
-		alignItems: "center",
-		justifyContent: "space-between",
-	},
-	shelfInfo: {
-		flex: 1,
-		marginRight: 10,
-	},
-	shelfName: {
-		fontSize: 17,
-		fontWeight: "700",
-		color: "#2c3e50",
-	},
-	shelfMeta: {
-		fontSize: 12,
-		color: "#58606a",
-		marginTop: 4,
-	},
-	shelfActions: {
-		flexDirection: "row",
-		alignItems: "center",
-	},
-
-	/* Buttons & small controls */
-	rowActions: {
-		flexDirection: "row",
-		alignItems: "center",
-	},
-	smallButton: {
-		marginLeft: 8,
-		paddingHorizontal: 8,
-		paddingVertical: 6,
-		borderRadius: 6,
-		backgroundColor: "#eef6ff",
-		borderWidth: 1,
-		borderColor: "#d9ecff",
-	},
-	smallButtonText: {
-		fontSize: 12,
-		color: "#2978b5",
-	},
-	openButton: {
-		marginLeft: 8,
-		paddingHorizontal: 10,
-		paddingVertical: 6,
-		borderRadius: 6,
-		borderWidth: 1,
-		borderColor: "#d1f2d1",
-		backgroundColor: "#f6fff6",
-	},
-	openButtonText: {
-		fontSize: 13,
-		color: "#2b8a2b",
-	},
-	playButton: {
-		marginLeft: 8,
-		paddingHorizontal: 12,
-		paddingVertical: 6,
-		borderRadius: 6,
-		backgroundColor: "#ffeecb",
-		borderWidth: 1,
-		borderColor: "#ffd7a8",
-	},
-	playButtonText: {
-		fontSize: 13,
-		color: "#b36b00",
-		fontWeight: "600",
-	},
-
-	/* Editing row styles */
-	editRow: {
-		flex: 1,
-		flexDirection: "row",
-		alignItems: "center",
-	},
-	editInput: {
-		flex: 1,
-		borderWidth: 1,
-		borderColor: "#ddd",
-		padding: 8,
-		borderRadius: 6,
-		marginRight: 8,
-	},
-});
 
 export default ShelfScreen;
