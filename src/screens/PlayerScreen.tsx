@@ -17,6 +17,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { RootStackParamList } from "../navigation/types";
 import { getNotesForFile, Note, saveNotesForFile } from "../storage/notesStorage";
 import { usePlayback } from "../context/PlaybackContext";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 // Theme & Components
 import { colors, playerScreenStyles } from "../theme";
@@ -48,9 +49,11 @@ const formatTime = (seconds: number) => {
 };
 
 const PlayerScreen: React.FC<PlayerProps> = ({ route, navigation }) => {
+	const insets = useSafeAreaInsets();
+
 	if (!route.params) {
 		return (
-			<SafeAreaView style={playerScreenStyles.container}>
+			<SafeAreaView style={[playerScreenStyles.container, { paddingTop: insets.top }]}>
 				<EmptyState
 					icon="musical-notes-outline"
 					title="No Track Selected"
@@ -258,7 +261,7 @@ const PlayerScreen: React.FC<PlayerProps> = ({ route, navigation }) => {
 	);
 
 	return (
-		<SafeAreaView style={playerScreenStyles.container}>
+		<SafeAreaView style={[playerScreenStyles.container, { paddingTop: insets.top }]}>
 			<StatusBar barStyle="light-content" backgroundColor={colors.background} />
 
 			{/* Header */}

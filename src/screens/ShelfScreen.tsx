@@ -10,6 +10,7 @@ import {
 	KeyboardAvoidingView,
 	Platform,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
@@ -124,6 +125,7 @@ const handleError = (err: unknown) => {
 };
 
 const ShelfScreen: React.FC<ShelfProps> = ({ navigation }) => {
+	const insets = useSafeAreaInsets();
 	const { settings } = useSettings();
 	const { setCurrentTrack } = usePlayback();
 	const { showAlert } = useAlert();
@@ -385,7 +387,7 @@ const ShelfScreen: React.FC<ShelfProps> = ({ navigation }) => {
 	const mediaItems = filteredList.filter((item) => !("itemCount" in item)) as MediaItem[];
 
 	return (
-		<SafeAreaView style={shelfScreenStyles.container}>
+		<SafeAreaView style={[shelfScreenStyles.container, { paddingTop: insets.top }]}>
 			<StatusBar barStyle="light-content" backgroundColor={colors.background} />
 
 			{/* Header */}
