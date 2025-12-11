@@ -4,6 +4,7 @@ import { RootStackParamList } from "./types";
 import ShelfScreen from "../screens/ShelfScreen";
 import PlayerScreen from "../screens/PlayerScreen";
 import SettingsScreen from "../screens/SettingsScreen";
+import FolderScreen from "../screens/FolderScreen";
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -24,6 +25,7 @@ const RootStack: React.FC = () => {
 					animation: "slide_from_bottom",
 				}}
 			/>
+			<Stack.Screen name="Folder" component={FolderScreen} />
 			<Stack.Screen name="Settings" component={SettingsScreen} />
 		</Stack.Navigator>
 	);

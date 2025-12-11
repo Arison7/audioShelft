@@ -14,9 +14,13 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
-import * as DocumentPicker from "expo-document-picker";
 import { RootStackParamList } from "../navigation/types";
-import { Directory, File } from "expo-file-system";
+import {
+	pick,
+	pickDirectory,
+	errorCodes,
+	isErrorWithCode,
+} from "@react-native-documents/picker";
 
 // Theme & Components
 import { colors, shelfScreenStyles } from "../theme";
@@ -37,6 +41,7 @@ import { usePlayback } from "../context/PlaybackContext";
 import { pickCoverImage } from "../utils/coverImage";
 import CoverImage from "../components/CoverImage";
 import MiniAudioPlayer from "../components/MiniAudioPlayer";
+import { Directory, File } from "expo-file-system";
 
 // Helper to get pattern index from ID (same as ShelfView)
 const getPatternIndex = (id: string): number => {
@@ -116,12 +121,24 @@ export type ShelfItem = MediaItem & {
 };
 
 const handleError = (err: unknown) => {
-	if (err instanceof Error) {
-		if (err.message.includes("User canceled") || err.message.includes("cancelled")) {
-			return; // User cancelled, don't show error
+	if (isErrorWithCode(err)) {
+		switch (err.code) {
+			case errorCodes.IN_PROGRESS:
+				console.warn(
+					"user attempted to present a picker, but a previous one was already presented"
+				);
+				break;
+			case errorCodes.UNABLE_TO_OPEN_FILE_TYPE:
+				break;
+			case errorCodes.OPERATION_CANCELED:
+				// ignore
+				break;
+			default:
+				console.error(err);
 		}
+	} else {
+		console.error(err);
 	}
-	console.error("Document picker error:", err);
 };
 
 const ShelfScreen: React.FC<ShelfProps> = ({ navigation }) => {
@@ -182,39 +199,66 @@ const ShelfScreen: React.FC<ShelfProps> = ({ navigation }) => {
 		loadShelf();
 	}, [loadShelf]);
 
-	const handleAddDirectory = async () => {
-		// Note: expo-document-picker doesn't support directory picking
-		// For now, show an alert that this feature isn't available
-		showAlert({
-			title: "Directory Selection",
-			message: "Directory selection is not available with the current document picker. Please add audio files individually.",
-			buttons: [{ text: "OK" }],
-		});
+	const handleAddDictionary = async () => {
+		setIsPicking(true);
+		try {
+			const result = await pickDirectory({
+				requestLongTermAccess: true,
+			});
+			// Iterate through files in the selected directory
+			const directory = new Directory(result.uri);
+			const items = directory.list();
+			const fileCount = items.filter(item => item instanceof File).length;
+			
+			// Get folder name from result or extract from URI
+			const folderName = result.name || result.uri.split('/').pop() || "Untitled Folder";
+			
+			const newShelf: ShelfItem = {
+				id: generateUniqueId(),
+				name: folderName,
+				permanentUri: result.uri,
+				timestamp: Date.now(),
+				itemCount: fileCount,
+				sortType: "date", // Default sort type
+			};
+			// Update the media list 
+			const updatedList = [newShelf, ...mediaList];
+			setMediaList(updatedList);
+			await saveShelf(updatedList);
+		} catch (error) {
+			handleError(error);
+		} finally {
+			setIsPicking(false);
+		}
 	};
 
 	const handleAddFile = async () => {
-		setIsPicking(true);
-		try {
-			const result = await DocumentPicker.getDocumentAsync({
-				type: "audio/*",
-				copyToCacheDirectory: true,
+/* 		setIsPicking(true);
+ */		try {
+			const [result] = await pick({
+				mode: "open",
+/* 				type: "audio/*",
+ */				requestLongTermAccess: true,
 			});
-			
-			if (!result.canceled && result.assets && result.assets.length > 0) {
-				const asset = result.assets[0];
+			if (result.error === null && result.name) {
+				let externalUri = result.uri;
+				const fileName = result.name;
+
 				const newItem: MediaItem = {
 					id: generateUniqueId(),
-					name: asset.name || "Unknown Audio",
-					permanentUri: asset.uri,
+					name: fileName,
+					permanentUri: externalUri, // Store the (now persistently accessible) URI
 					timestamp: Date.now(),
 				};
+
 				const updatedList = [newItem, ...mediaList];
 				setMediaList(updatedList);
-				await saveShelf(updatedList);
+				await saveShelf(updatedList); // Persist to local storage
 			}
 		} catch (error: any) {
-			if (error.message && !error.message.includes("cancel")) {
-				console.error("Error adding file:", error);
+			// we don't need to alert on user cancellation
+			if (error.name !== "UserCancelledError") {
+				console.error("Error adding file to shelf:", error);
 			}
 		} finally {
 			setIsPicking(false);
@@ -294,9 +338,9 @@ const ShelfScreen: React.FC<ShelfProps> = ({ navigation }) => {
 				if (!("itemCount" in it)) {
 					// If there's a cover, clear pattern. If no cover, use the selected pattern
 					const finalPatternIndex = editingCoverUri ? undefined : editingPatternIndex;
-					return { 
-						...it, 
-						name: trimmed, 
+					return {
+						...it,
+						name: trimmed,
 						coverImageUri: editingCoverUri,
 						patternIndex: finalPatternIndex,
 					};
@@ -326,19 +370,59 @@ const ShelfScreen: React.FC<ShelfProps> = ({ navigation }) => {
 	};
 
 	const handleOpenShelf = (shelf: ShelfItem) => {
-		showAlert({
-			title: "Coming Soon",
-			message: `"${shelf.name}" folder view is not implemented yet.`,
-			buttons: [{ text: "OK" }],
+		navigation.navigate("Folder", {
+			folderUri: shelf.permanentUri,
+			folderName: shelf.name,
 		});
 	};
 
-	const handlePlayShelf = (shelf: ShelfItem) => {
-		showAlert({
-			title: "Coming Soon",
-			message: `Play all in "${shelf.name}" is not implemented yet.`,
-			buttons: [{ text: "OK" }],
-		});
+	const handlePlayShelf = async (shelf: ShelfItem) => {
+		try {
+			const directory = new Directory(shelf.permanentUri);
+			const items = directory.list();
+			
+			// Find first audio file
+			for (const item of items) {
+				if (item instanceof File) {
+					const fileName = item.name.toLowerCase();
+					if (
+						fileName.endsWith(".mp3") ||
+						fileName.endsWith(".m4a") ||
+						fileName.endsWith(".wav") ||
+						fileName.endsWith(".aac") ||
+						fileName.endsWith(".ogg") ||
+						fileName.endsWith(".flac") ||
+						fileName.endsWith(".mp4")
+					) {
+						setCurrentTrack({
+							filePath: item.uri,
+							fileName: item.name,
+							itemId: `${shelf.id}-${item.name}`,
+						});
+						navigation.navigate("Player", {
+							filePath: item.uri,
+							fileName: item.name,
+							itemId: `${shelf.id}-${item.name}`,
+						});
+						return;
+					}
+				}
+			}
+			
+			// No audio files found
+			showAlert({
+				title: "No Audio Files",
+				message: `No audio files found in "${shelf.name}"`,
+				buttons: [{ text: "OK" }],
+			});
+		} catch (error) {
+			console.error("Failed to play folder:", error);
+			showAlert({
+				title: "Error",
+				message: `Failed to access folder: ${error instanceof Error ? error.message : "Unknown error"}`,
+				buttons: [{ text: "OK" }],
+			});
+		}
 	};
 
 	const showItemActions = (item: MediaItem | ShelfItem) => {
@@ -352,9 +436,9 @@ const ShelfScreen: React.FC<ShelfProps> = ({ navigation }) => {
 					onPress: () => isShelf ? handleOpenShelf(item as ShelfItem) : handlePlayItem(item as MediaItem),
 				},
 				{ text: "Rename", onPress: () => openEditModal(item) },
-				{ 
-					text: "Delete", 
-					style: "destructive", 
+				{
+					text: "Delete",
+					style: "destructive",
 					onPress: () => {
 						// Delay to ensure the first alert is fully dismissed before showing the delete confirmation
 						setTimeout(() => {
@@ -378,8 +462,8 @@ const ShelfScreen: React.FC<ShelfProps> = ({ navigation }) => {
 	// Filter items based on search query
 	const filteredList = searchQuery.trim()
 		? mediaList.filter((item) =>
-				item.name.toLowerCase().includes(searchQuery.toLowerCase())
-		  )
+			item.name.toLowerCase().includes(searchQuery.toLowerCase())
+		)
 		: mediaList;
 
 	// Separate folders and media items
@@ -395,7 +479,7 @@ const ShelfScreen: React.FC<ShelfProps> = ({ navigation }) => {
 				<View>
 					<Typography variant="h2">Library</Typography>
 					<Typography variant="bodySmall" color="muted" style={shelfScreenStyles.subtitle}>
-						{searchQuery.trim() 
+						{searchQuery.trim()
 							? `${filteredList.length} of ${mediaList.length} ${mediaList.length === 1 ? "item" : "items"}`
 							: `${mediaList.length} ${mediaList.length === 1 ? "item" : "items"}`
 						}
@@ -415,7 +499,7 @@ const ShelfScreen: React.FC<ShelfProps> = ({ navigation }) => {
 									},
 									{
 										text: "Add Folder",
-										onPress: handleAddDirectory,
+										onPress: handleAddDictionary,
 									},
 									{
 										text: "Cancel",
@@ -439,10 +523,10 @@ const ShelfScreen: React.FC<ShelfProps> = ({ navigation }) => {
 			{/* Search Bar */}
 			<View style={shelfScreenStyles.searchContainer}>
 				<View style={shelfScreenStyles.searchInputWrapper}>
-					<Ionicons 
-						name="search-outline" 
-						size={20} 
-						color={colors.textMuted} 
+					<Ionicons
+						name="search-outline"
+						size={20}
+						color={colors.textMuted}
 						style={shelfScreenStyles.searchIcon}
 					/>
 					<Input
@@ -579,7 +663,7 @@ const ShelfScreen: React.FC<ShelfProps> = ({ navigation }) => {
 								<Typography variant="h3" style={shelfScreenStyles.modalTitle}>
 									Edit Book
 								</Typography>
-								
+
 								{/* Cover Image - Show for MediaItems only */}
 								{editingItem && !("itemCount" in editingItem) && (
 									<View style={shelfScreenStyles.coverImageSection}>

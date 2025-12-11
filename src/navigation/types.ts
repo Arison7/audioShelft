@@ -5,5 +5,6 @@ export type RootStackParamList = {
   Profile: undefined;
   Shelf: undefined;
   Player: { filePath: string; fileName: string; coverImageUri?: string; itemId?: string };
+  Folder: { folderUri: string; folderName: string };
   Settings: undefined;
 };

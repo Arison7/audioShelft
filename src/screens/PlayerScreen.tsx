@@ -30,7 +30,7 @@ import {
 	EmptyState,
 	LoadingScreen,
 } from "../components/ui";
-import AudioPlayer, { AudioPlayerRef } from "../compoments/AudioPlayer";
+import AudioPlayer, { AudioPlayerRef } from "../components/AudioPlayer";
 
 type PlayerProps = NativeStackScreenProps<RootStackParamList, "Player">;
 

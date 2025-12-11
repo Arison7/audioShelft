@@ -4,7 +4,7 @@ import { Ionicons } from "@expo/vector-icons";
 
 // Theme & Components
 import { colors, audioPlayerStyles } from "../theme";
-import { Typography, Slider, Button } from "../components/ui";
+import { Typography, Slider, Button } from "./ui";
 
 // Storage
 import { savePlaybackPosition, getPlaybackPosition } from "../storage/playbackStorage";
@@ -615,3 +615,5 @@ const AudioPlayer = forwardRef<AudioPlayerRef, AudioPlayerProps>(({
 AudioPlayer.displayName = "AudioPlayer";
 
 export default AudioPlayer;
+
+
