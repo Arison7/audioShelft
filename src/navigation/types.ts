@@ -4,5 +4,7 @@ export type RootStackParamList = {
   Home: undefined;
   Profile: undefined;
   Shelf: undefined;
-  Player: { filePath: string; fileName: string }; // Example parameters for media player
+  Player: { filePath: string; fileName: string; coverImageUri?: string; itemId?: string };
+  Folder: { folderUri: string; folderName: string };
+  Settings: undefined;
 };
